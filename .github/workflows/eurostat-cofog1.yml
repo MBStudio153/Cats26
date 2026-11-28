@@ -1,1 +1,63 @@
+name: eurostat-cofog1
+on: workflow_dispatch
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {job: defence, tag: defence}
+          - {job: health, tag: health}
+          - {job: meta, tag: meta}
+    steps:
+      - name: Download Eurostat government expenditure by function (gov_10a_exp)
+        continue-on-error: true
+        env:
+          JOB_: ${{ matrix.job }}
+        run: |
+          mkdir -p out
+          cat > e.py <<'PY'
+          import os, time, urllib.request, urllib.error
+          job = os.environ["JOB_"]
+          log = open("out/log.txt", "w")
+          UA = {"User-Agent": "Mozilla/5.0 (compatible; kaim-research/1.0; info@kaimresearch.com)", "Accept": "*/*"}
+          def get(name, url, head=600):
+              for a in range(3):
+                  try:
+                      r = urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=180)
+                      b = r.read()
+                      open("out/" + name, "wb").write(b)
+                      log.write("%s %s len=%d\n   head: %s\n" % (r.status, url, len(b), b[:head].decode("utf-8", "replace").replace("\n", " "))); log.flush()
+                      return
+                  except urllib.error.HTTPError as e:
+                      log.write("%s %s attempt %d %s\n" % (e.code, url, a, e.read()[:400].decode("utf-8", "replace").replace("\n", " "))); log.flush()
+                      if e.code in (403, 404): return
+                  except Exception as e:
+                      log.write("ERR %s attempt %d %r\n" % (url, a, e)); log.flush()
+                  time.sleep(15)
+          A = "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/gov_10a_exp"
+          if job in ("defence", "health"):
+              code = "GF02" if job == "defence" else "GF07"
+              for unit in ("MIO_EUR", "PC_GDP", "PC_TOT"):
+                  get("gov_10a_exp_%s_%s.json" % (code, unit), "%s?format=JSON&lang=EN&sector=S13&na_item=TE&cofog99=%s&unit=%s" % (A, code, unit), 300)
+                  time.sleep(2)
+              get("gov_10a_exp_%s_all_na_items_MIO_EUR.json" % code, "%s?format=JSON&lang=EN&sector=S13&cofog99=%s&unit=MIO_EUR" % (A, code), 300)
+          else:
+              E = "https://ec.europa.eu/eurostat/"
+              get("copyright_notice.html", E + "help/copyright-notice", 200)
+              get("copyright_notice_en.html", E + "en/help/copyright-notice", 200)
+              get("gov_10a_exp_metadata.htm", E + "cache/metadata/en/gov_10a_exp_esms.htm", 200)
+              get("gov_10a_exp_structure.json", A + "?format=JSON&lang=EN&sector=S13&na_item=TE&cofog99=GF02&unit=PC_GDP&geo=DE", 600)
+              get("dataflow_gov_10a_exp.xml", "https://ec.europa.eu/eurostat/api/dissemination/sdmx/2.1/dataflow/ESTAT/gov_10a_exp/latest?references=descendants&detail=full", 400)
+              get("gov_10a_exp_full.tsv.gz", "https://ec.europa.eu/eurostat/api/dissemination/sdmx/3.0/data/dataflow/ESTAT/gov_10a_exp/1.0/*.*.*.*.*.*?c[TIME_PERIOD]=ge:1995&compress=true&format=csvdata", 100)
+          log.close()
+          PY
+          python3 e.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eurostat-cofog1-${{ matrix.tag }}
+          path: out/
 
