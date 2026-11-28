@@ -1,1 +1,80 @@
+name: govdata-discovery2
+on: workflow_dispatch
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {job: census_pop, tag: census_pop}
+          - {job: census_idb, tag: census_idb}
+    steps:
+      - name: Download government data files and probe the IMF API
+        continue-on-error: true
+        env:
+          JOB_: ${{ matrix.job }}
+        run: |
+          mkdir -p out
+          cat > g.py <<'PY'
+          import os, time, json, urllib.request, urllib.error
+          job = os.environ["JOB_"]
+          log = open("out/log.txt", "w")
+          UA = {"User-Agent": "Mozilla/5.0 (compatible; kaim-research/1.0; info@kaimresearch.com)", "Accept": "*/*"}
+          def get(name, url, accept=None, maxprint=1500):
+              h = dict(UA)
+              if accept: h["Accept"] = accept
+              for a in range(3):
+                  try:
+                      r = urllib.request.urlopen(urllib.request.Request(url, headers=h), timeout=120)
+                      b = r.read(); code = r.status
+                      open("out/" + name, "wb").write(b)
+                      log.write("%s %s len=%d\n" % (code, url, len(b))); log.write("   head: " + b[:maxprint].decode("utf-8", "replace").replace("\n", " ") + "\n"); log.flush()
+                      return
+                  except urllib.error.HTTPError as e:
+                      body = e.read()[:600].decode("utf-8", "replace").replace("\n", " ")
+                      log.write("%s %s attempt %d %s\n" % (e.code, url, a, body)); log.flush()
+                      if e.code in (403, 404): return
+                  except Exception as e:
+                      log.write("ERR %s attempt %d %r\n" % (url, a, e)); log.flush()
+                  time.sleep(10)
+          C = "https://www2.census.gov/programs-surveys/popest/"
+          if job == "census_pop":
+              for n, u in [
+                  ("popclockest_1900_1999.txt", C + "tables/1900-1980/national/totals/popclockest.txt"),
+                  ("us-est00int-tot.csv", C + "datasets/2000-2010/intercensal/national/us-est00int-tot.csv"),
+                  ("nst-est2020-alldata.csv", C + "datasets/2010-2020/national/totals/nst-est2020-alldata.csv"),
+                  ("NST-EST2024-ALLDATA.csv", C + "datasets/2020-2024/state/totals/NST-EST2024-ALLDATA.csv"),
+                  ("NST-EST2025-ALLDATA.csv", C + "datasets/2020-2025/state/totals/NST-EST2025-ALLDATA.csv"),
+                  ("NST-EST2025-POPCHG.csv", C + "datasets/2020-2025/state/totals/NST-EST2025-POPCHG2020_2025.csv"),
+              ]:
+                  get(n, u, maxprint=400)
+          elif job == "census_idb":
+              for yr in range(1960, 2026):
+                  get("idb_%d.json" % yr, "https://api.census.gov/data/timeseries/idb/1year?get=NAME,GENC,POP&YR=%d" % yr, "application/json", maxprint=200)
+                  time.sleep(1)
+          elif job == "nato":
+              N = "https://www.nato.int/content/dam/nato/webready/documents/finance/"
+              for n, u in [("def-exp-2025-en.pdf", N + "def-exp-2025-en.pdf"), ("def-exp-2024-en.pdf", N + "def-exp-2024-en.pdf"), ("def-exp-2023-en.pdf", N + "def-exp-2023-en.pdf")]:
+                  get(n, u, maxprint=80)
+          elif job == "imf_probe":
+              B = "https://api.imf.org/external/sdmx/3.0"
+              J = "application/json"
+              get("flows.json", B + "/structure/dataflow/IMF.STA/*/+", J, 600)
+              get("cofog_flow.json", B + "/structure/dataflow/IMF.STA/GFS_COFOG/+?references=descendants", J, 3000)
+              get("cofog_flow2.json", B + "/structure/dataflow/IMF.STA/GFS_COFOG/+", J, 3000)
+              get("cofog_dsd.json", B + "/structure/datastructure/IMF.STA/DSD_GFS_COFOG/+?references=children", J, 3000)
+              get("cofog_sample1.json", B + "/data/dataflow/IMF.STA/GFS_COFOG/+/*?c[TIME_PERIOD]=ge:2023&dimensionAtObservation=AllDimensions", J, 3000)
+              get("cofog_sample2.json", B + "/data/dataflow/IMF.STA/GFS_COFOG/+/USA.*.*.*.*?dimensionAtObservation=AllDimensions", J, 3000)
+              get("legacy_dsd.json", "http://dataservices.imf.org/REST/SDMX_JSON.svc/DataStructure/GFSCOFOG", J, 2000)
+              get("legacy_flows.json", "http://dataservices.imf.org/REST/SDMX_JSON.svc/Dataflow", J, 800)
+          log.close()
+          PY
+          python3 g.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: govdata-discovery2-${{ matrix.tag }}
+          path: out/
 
