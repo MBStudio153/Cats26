@@ -1,1 +1,60 @@
+name: nass-turkeys2
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  turkeys:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: NASS Quick Stats API, turkey inventory, placements, slaughter and condemnation rows (possible replacements for the death loss series that stops in 2007)
+        env:
+          NASS_KEY: ${{ secrets.NASS_API_KEY }}
+        run: |
+          mkdir -p out
+          cat > q.py <<'PY'
+          import json, os, time, urllib.error, urllib.parse, urllib.request
+          key = os.environ["NASS_KEY"]
+          log = open("out/log.txt", "w"); rows = []; seen = set()
+          if not key: log.write("NASS_API_KEY secret is empty\n"); log.flush()
+          def call(q):
+              url = "https://quickstats.nass.usda.gov/api/api_GET/?" + urllib.parse.urlencode(q)
+              for a in range(3):
+                  try:
+                      return json.loads(urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "kaim-research/1.0"}), timeout=120).read().decode())
+                  except urllib.error.HTTPError as e:
+                      if e.code == 400: return {"data": [], "note": "400 (no records or bad filter)"}
+                      log.write("attempt %d %r\n" % (a, e)); log.flush(); time.sleep(8)
+                  except Exception as e:
+                      log.write("attempt %d %r\n" % (a, e)); log.flush(); time.sleep(8)
+              return {"data": []}
+          cats = ["INVENTORY", "INVENTORY, PEAK", "STOCKS", "PLACEMENTS", "PLACEMENTS, NET", "HATCHED", "PRODUCTION", "SLAUGHTERED", "SALES",
+                  "CONDEMNED, ANTE-MORTEM", "CONDEMNED, POST-MORTEM", "CONDEMNED, POST-MORTEM, ALL CAUSES", "CONDEMNED, POST-MORTEM, CADAVER", "CAPACITY"]
+          spans = ((1900, 1989), (1990, 2009), (2010, 2026))
+          for c in cats:
+              for y0, y1 in spans:
+                  q = {"key": key, "commodity_desc": "TURKEYS", "statisticcat_desc": c, "year__GE": str(y0), "year__LE": str(y1), "format": "JSON"}
+                  r = call(q); data = r.get("data", [])
+                  n = 0
+                  for x in data:
+                      k = (x.get("short_desc"), x.get("year"), x.get("state_alpha"), x.get("agg_level_desc"), x.get("reference_period_desc"), x.get("domaincat_desc"))
+                      if k not in seen: seen.add(k); rows.append(x); n += 1
+                  log.write("%s %d-%d: %d rows, %d new %s\n" % (c, y0, y1, len(data), n, r.get("note", ""))); log.flush()
+                  time.sleep(1)
+          json.dump(rows, open("out/nass_turkeys_other.json", "w"))
+          import collections
+          log.write("total %d rows\n" % len(rows))
+          for k, v in collections.Counter((x.get("short_desc"), x.get("agg_level_desc"), x.get("freq_desc")) for x in rows).most_common(80):
+              ys = sorted(int(x["year"]) for x in rows if (x.get("short_desc"), x.get("agg_level_desc"), x.get("freq_desc")) == k)
+              log.write("%6d  %s  years %s-%s\n" % (v, k, ys[0], ys[-1]))
+          log.close()
+          PY
+          python3 q.py
+          tail -40 out/log.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nass-turkeys2
+          path: out/
+          retention-days: 3
 
